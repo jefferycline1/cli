@@ -58,16 +58,11 @@ func newDeleteCmd(app *App) *cobra.Command {
 	return deleteCmd
 }
 
-func (a *App) Delete(ctx context.Context, opts deleteOptions) error {
-	user, err := a.apiClient.GetUser(ctx)
-	if err != nil {
-		return fmt.Errorf("error getting user: %w", err)
-	}
-
+func (a *App) Delete(ctx context.Context, opts deleteOptions) (err error) {
 	var codespaces []*api.Codespace
 	nameFilter := opts.codespaceName
 	if nameFilter == "" {
-		codespaces, err = a.apiClient.ListCodespaces(ctx)
+		codespaces, err = a.apiClient.ListCodespaces(ctx, -1)
 		if err != nil {
 			return fmt.Errorf("error getting codespaces: %w", err)
 		}
@@ -80,12 +75,7 @@ func (a *App) Delete(ctx context.Context, opts deleteOptions) error {
 			nameFilter = c.Name
 		}
 	} else {
-		token, err := a.apiClient.GetCodespaceToken(ctx, user.Login, nameFilter)
-		if err != nil {
-			return fmt.Errorf("error getting codespace token: %w", err)
-		}
-
-		codespace, err := a.apiClient.GetCodespace(ctx, token, user.Login, nameFilter)
+		codespace, err := a.apiClient.GetCodespace(ctx, nameFilter, false)
 		if err != nil {
 			return fmt.Errorf("error fetching codespace information: %w", err)
 		}
@@ -99,7 +89,7 @@ func (a *App) Delete(ctx context.Context, opts deleteOptions) error {
 		if nameFilter != "" && c.Name != nameFilter {
 			continue
 		}
-		if opts.repoFilter != "" && !strings.EqualFold(c.RepositoryNWO, opts.repoFilter) {
+		if opts.repoFilter != "" && !strings.EqualFold(c.Repository.FullName, opts.repoFilter) {
 			continue
 		}
 		if opts.keepDays > 0 {
@@ -152,16 +142,15 @@ func (a *App) Delete(ctx context.Context, opts deleteOptions) error {
 	return nil
 }
 
-func confirmDeletion(p prompter, codespace *api.Codespace, isInteractive bool) (bool, error) {
-	gs := codespace.Environment.GitStatus
-	hasUnsavedChanges := gs.HasUncommitedChanges || gs.HasUnpushedChanges
-	if !hasUnsavedChanges {
+func confirmDeletion(p prompter, apiCodespace *api.Codespace, isInteractive bool) (bool, error) {
+	cs := codespace{apiCodespace}
+	if !cs.hasUnsavedChanges() {
 		return true, nil
 	}
 	if !isInteractive {
-		return false, fmt.Errorf("codespace %s has unsaved changes (use --force to override)", codespace.Name)
+		return false, fmt.Errorf("codespace %s has unsaved changes (use --force to override)", cs.Name)
 	}
-	return p.Confirm(fmt.Sprintf("Codespace %s has unsaved changes. OK to delete?", codespace.Name))
+	return p.Confirm(fmt.Sprintf("Codespace %s has unsaved changes. OK to delete?", cs.Name))
 }
 
 type surveyPrompter struct{}

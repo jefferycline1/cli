@@ -40,21 +40,15 @@ func newPortsCmd(app *App) *cobra.Command {
 	portsCmd.PersistentFlags().StringVarP(&codespace, "codespace", "c", "", "Name of the codespace")
 	portsCmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
 
-	portsCmd.AddCommand(newPortsPublicCmd(app))
-	portsCmd.AddCommand(newPortsPrivateCmd(app))
 	portsCmd.AddCommand(newPortsForwardCmd(app))
+	portsCmd.AddCommand(newPortsVisibilityCmd(app))
 
 	return portsCmd
 }
 
 // ListPorts lists known ports in a codespace.
 func (a *App) ListPorts(ctx context.Context, codespaceName string, asJSON bool) (err error) {
-	user, err := a.apiClient.GetUser(ctx)
-	if err != nil {
-		return fmt.Errorf("error getting user: %w", err)
-	}
-
-	codespace, token, err := getOrChooseCodespace(ctx, a.apiClient, user, codespaceName)
+	codespace, err := getOrChooseCodespace(ctx, a.apiClient, codespaceName)
 	if err != nil {
 		// TODO(josebalius): remove special handling of this error here and it other places
 		if err == errNoCodespaces {
@@ -65,7 +59,7 @@ func (a *App) ListPorts(ctx context.Context, codespaceName string, asJSON bool) 
 
 	devContainerCh := getDevContainer(ctx, a.apiClient, codespace)
 
-	session, err := codespaces.ConnectToLiveshare(ctx, a.logger, a.apiClient, user.Login, token, codespace)
+	session, err := codespaces.ConnectToLiveshare(ctx, a.logger, noopLogger(), a.apiClient, codespace)
 	if err != nil {
 		return fmt.Errorf("error connecting to Live Share: %w", err)
 	}
@@ -84,7 +78,7 @@ func (a *App) ListPorts(ctx context.Context, codespaceName string, asJSON bool) 
 	}
 
 	table := output.NewTable(os.Stdout, asJSON)
-	table.SetHeader([]string{"Label", "Port", "Public", "Browse URL"})
+	table.SetHeader([]string{"Label", "Port", "Visibility", "Browse URL"})
 	for _, port := range ports {
 		sourcePort := strconv.Itoa(port.SourcePort)
 		var portName string
@@ -97,7 +91,7 @@ func (a *App) ListPorts(ctx context.Context, codespaceName string, asJSON bool) 
 		table.Append([]string{
 			portName,
 			sourcePort,
-			strings.ToUpper(strconv.FormatBool(port.IsPublic)),
+			port.Privacy,
 			fmt.Sprintf("https://%s-%s.githubpreview.dev/", codespace.Name, sourcePort),
 		})
 	}
@@ -150,12 +144,12 @@ func getDevContainer(ctx context.Context, apiClient apiClient, codespace *api.Co
 	return ch
 }
 
-// newPortsPublicCmd returns a Cobra "ports public" subcommand, which makes a given port public.
-func newPortsPublicCmd(app *App) *cobra.Command {
+func newPortsVisibilityCmd(app *App) *cobra.Command {
 	return &cobra.Command{
-		Use:   "public <port>",
-		Short: "Mark port as public",
-		Args:  cobra.ExactArgs(1),
+		Use:     "visibility <port>:{public|private|org}...",
+		Short:   "Change the visibility of the forwarded port",
+		Example: "gh codespace ports visibility 80:org 3000:private 8000:public",
+		Args:    cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			codespace, err := cmd.Flags().GetString("codespace")
 			if err != nil {
@@ -164,39 +158,17 @@ func newPortsPublicCmd(app *App) *cobra.Command {
 				// since it's a persistent flag that we control it should never happen
 				return fmt.Errorf("get codespace flag: %w", err)
 			}
-
-			return app.UpdatePortVisibility(cmd.Context(), codespace, args[0], true)
+			return app.UpdatePortVisibility(cmd.Context(), codespace, args)
 		},
 	}
 }
 
-// newPortsPrivateCmd returns a Cobra "ports private" subcommand, which makes a given port private.
-func newPortsPrivateCmd(app *App) *cobra.Command {
-	return &cobra.Command{
-		Use:   "private <port>",
-		Short: "Mark port as private",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			codespace, err := cmd.Flags().GetString("codespace")
-			if err != nil {
-				// should only happen if flag is not defined
-				// or if the flag is not of string type
-				// since it's a persistent flag that we control it should never happen
-				return fmt.Errorf("get codespace flag: %w", err)
-			}
-
-			return app.UpdatePortVisibility(cmd.Context(), codespace, args[0], false)
-		},
-	}
-}
-
-func (a *App) UpdatePortVisibility(ctx context.Context, codespaceName, sourcePort string, public bool) (err error) {
-	user, err := a.apiClient.GetUser(ctx)
+func (a *App) UpdatePortVisibility(ctx context.Context, codespaceName string, args []string) (err error) {
+	ports, err := a.parsePortVisibilities(args)
 	if err != nil {
-		return fmt.Errorf("error getting user: %w", err)
+		return fmt.Errorf("error parsing port arguments: %w", err)
 	}
-
-	codespace, token, err := getOrChooseCodespace(ctx, a.apiClient, user, codespaceName)
+	codespace, err := getOrChooseCodespace(ctx, a.apiClient, codespaceName)
 	if err != nil {
 		if err == errNoCodespaces {
 			return err
@@ -204,28 +176,43 @@ func (a *App) UpdatePortVisibility(ctx context.Context, codespaceName, sourcePor
 		return fmt.Errorf("error getting codespace: %w", err)
 	}
 
-	session, err := codespaces.ConnectToLiveshare(ctx, a.logger, a.apiClient, user.Login, token, codespace)
+	session, err := codespaces.ConnectToLiveshare(ctx, a.logger, noopLogger(), a.apiClient, codespace)
 	if err != nil {
 		return fmt.Errorf("error connecting to Live Share: %w", err)
 	}
 	defer safeClose(session, &err)
 
-	port, err := strconv.Atoi(sourcePort)
-	if err != nil {
-		return fmt.Errorf("error reading port number: %w", err)
-	}
+	for _, port := range ports {
+		if err := session.UpdateSharedServerPrivacy(ctx, port.number, port.visibility); err != nil {
+			return fmt.Errorf("error update port to public: %w", err)
+		}
 
-	if err := session.UpdateSharedVisibility(ctx, port, public); err != nil {
-		return fmt.Errorf("error update port to public: %w", err)
+		a.logger.Printf("Port %d is now %s scoped.\n", port.number, port.visibility)
 	}
-
-	state := "PUBLIC"
-	if !public {
-		state = "PRIVATE"
-	}
-	a.logger.Printf("Port %s is now %s.\n", sourcePort, state)
 
 	return nil
+}
+
+type portVisibility struct {
+	number     int
+	visibility string
+}
+
+func (a *App) parsePortVisibilities(args []string) ([]portVisibility, error) {
+	ports := make([]portVisibility, 0, len(args))
+	for _, a := range args {
+		fields := strings.Split(a, ":")
+		if len(fields) != 2 {
+			return nil, fmt.Errorf("invalid port visibility format for %q", a)
+		}
+		portStr, visibility := fields[0], fields[1]
+		portNumber, err := strconv.Atoi(portStr)
+		if err != nil {
+			return nil, fmt.Errorf("invalid port number: %w", err)
+		}
+		ports = append(ports, portVisibility{portNumber, visibility})
+	}
+	return ports, nil
 }
 
 // NewPortsForwardCmd returns a Cobra "ports forward" subcommand, which forwards a set of
@@ -255,12 +242,7 @@ func (a *App) ForwardPorts(ctx context.Context, codespaceName string, ports []st
 		return fmt.Errorf("get port pairs: %w", err)
 	}
 
-	user, err := a.apiClient.GetUser(ctx)
-	if err != nil {
-		return fmt.Errorf("error getting user: %w", err)
-	}
-
-	codespace, token, err := getOrChooseCodespace(ctx, a.apiClient, user, codespaceName)
+	codespace, err := getOrChooseCodespace(ctx, a.apiClient, codespaceName)
 	if err != nil {
 		if err == errNoCodespaces {
 			return err
@@ -268,7 +250,7 @@ func (a *App) ForwardPorts(ctx context.Context, codespaceName string, ports []st
 		return fmt.Errorf("error getting codespace: %w", err)
 	}
 
-	session, err := codespaces.ConnectToLiveshare(ctx, a.logger, a.apiClient, user.Login, token, codespace)
+	session, err := codespaces.ConnectToLiveshare(ctx, a.logger, noopLogger(), a.apiClient, codespace)
 	if err != nil {
 		return fmt.Errorf("error connecting to Live Share: %w", err)
 	}
@@ -287,7 +269,7 @@ func (a *App) ForwardPorts(ctx context.Context, codespaceName string, ports []st
 			defer listen.Close()
 			a.logger.Printf("Forwarding ports: remote %d <=> local %d\n", pair.remote, pair.local)
 			name := fmt.Sprintf("share-%d", pair.remote)
-			fwd := liveshare.NewPortForwarder(session, name, pair.remote)
+			fwd := liveshare.NewPortForwarder(session, name, pair.remote, false)
 			return fwd.ForwardToListener(ctx, listen) // error always non-nil
 		})
 	}

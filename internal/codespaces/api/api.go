@@ -34,9 +34,13 @@ import (
 	"fmt"
 	"io/ioutil"
 	"net/http"
+	"net/url"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/cli/cli/v2/api"
 	"github.com/opentracing/opentracing-go"
 )
 
@@ -81,13 +85,13 @@ func (a *API) GetUser(ctx context.Context) (*User, error) {
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode != http.StatusOK {
+		return nil, api.HandleHTTPError(resp)
+	}
+
 	b, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("error reading response body: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, jsonErrorResponse(b)
 	}
 
 	var response User
@@ -98,21 +102,10 @@ func (a *API) GetUser(ctx context.Context) (*User, error) {
 	return &response, nil
 }
 
-// jsonErrorResponse returns the error message from a JSON response.
-func jsonErrorResponse(b []byte) error {
-	var response struct {
-		Message string `json:"message"`
-	}
-	if err := json.Unmarshal(b, &response); err != nil {
-		return fmt.Errorf("error unmarshaling error response: %w", err)
-	}
-
-	return errors.New(response.Message)
-}
-
 // Repository represents a GitHub repository.
 type Repository struct {
-	ID int `json:"id"`
+	ID       int    `json:"id"`
+	FullName string `json:"full_name"`
 }
 
 // GetRepository returns the repository associated with the given owner and name.
@@ -129,13 +122,13 @@ func (a *API) GetRepository(ctx context.Context, nwo string) (*Repository, error
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode != http.StatusOK {
+		return nil, api.HandleHTTPError(resp)
+	}
+
 	b, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("error reading response body: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, jsonErrorResponse(b)
 	}
 
 	var response Repository
@@ -148,37 +141,30 @@ func (a *API) GetRepository(ctx context.Context, nwo string) (*Repository, error
 
 // Codespace represents a codespace.
 type Codespace struct {
-	Name           string               `json:"name"`
-	CreatedAt      string               `json:"created_at"`
-	LastUsedAt     string               `json:"last_used_at"`
-	Branch         string               `json:"branch"`
-	RepositoryName string               `json:"repository_name"`
-	RepositoryNWO  string               `json:"repository_nwo"`
-	OwnerLogin     string               `json:"owner_login"`
-	Environment    CodespaceEnvironment `json:"environment"`
+	Name       string              `json:"name"`
+	CreatedAt  string              `json:"created_at"`
+	LastUsedAt string              `json:"last_used_at"`
+	Owner      User                `json:"owner"`
+	Repository Repository          `json:"repository"`
+	State      string              `json:"state"`
+	GitStatus  CodespaceGitStatus  `json:"git_status"`
+	Connection CodespaceConnection `json:"connection"`
 }
 
-type CodespaceEnvironment struct {
-	State      string                         `json:"state"`
-	Connection CodespaceEnvironmentConnection `json:"connection"`
-	GitStatus  CodespaceEnvironmentGitStatus  `json:"gitStatus"`
-}
-
-type CodespaceEnvironmentGitStatus struct {
+type CodespaceGitStatus struct {
 	Ahead                int    `json:"ahead"`
 	Behind               int    `json:"behind"`
-	Branch               string `json:"branch"`
-	Commit               string `json:"commit"`
-	HasUnpushedChanges   bool   `json:"hasUnpushedChanges"`
-	HasUncommitedChanges bool   `json:"hasUncommitedChanges"`
+	Ref                  string `json:"ref"`
+	HasUnpushedChanges   bool   `json:"has_unpushed_changes"`
+	HasUncommitedChanges bool   `json:"has_uncommited_changes"`
 }
 
 const (
-	// CodespaceEnvironmentStateAvailable is the state for a running codespace environment.
-	CodespaceEnvironmentStateAvailable = "Available"
+	// CodespaceStateAvailable is the state for a running codespace environment.
+	CodespaceStateAvailable = "Available"
 )
 
-type CodespaceEnvironmentConnection struct {
+type CodespaceConnection struct {
 	SessionID      string   `json:"sessionId"`
 	SessionToken   string   `json:"sessionToken"`
 	RelayEndpoint  string   `json:"relayEndpoint"`
@@ -186,123 +172,106 @@ type CodespaceEnvironmentConnection struct {
 	HostPublicKeys []string `json:"hostPublicKeys"`
 }
 
-// ListCodespaces returns a list of codespaces for the user.
-func (a *API) ListCodespaces(ctx context.Context) ([]*Codespace, error) {
-	req, err := http.NewRequest(
-		http.MethodGet, a.githubAPI+"/user/codespaces", nil,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("error creating request: %w", err)
+// ListCodespaces returns a list of codespaces for the user. Pass a negative limit to request all pages from
+// the API until all codespaces have been fetched.
+func (a *API) ListCodespaces(ctx context.Context, limit int) (codespaces []*Codespace, err error) {
+	perPage := 100
+	if limit > 0 && limit < 100 {
+		perPage = limit
 	}
 
-	a.setHeaders(req)
-	resp, err := a.do(ctx, req, "/user/codespaces")
-	if err != nil {
-		return nil, fmt.Errorf("error making request: %w", err)
-	}
-	defer resp.Body.Close()
+	listURL := fmt.Sprintf("%s/user/codespaces?per_page=%d", a.githubAPI, perPage)
+	for {
+		req, err := http.NewRequest(http.MethodGet, listURL, nil)
+		if err != nil {
+			return nil, fmt.Errorf("error creating request: %w", err)
+		}
+		a.setHeaders(req)
 
-	b, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("error reading response body: %w", err)
-	}
+		resp, err := a.do(ctx, req, "/user/codespaces")
+		if err != nil {
+			return nil, fmt.Errorf("error making request: %w", err)
+		}
+		defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		return nil, jsonErrorResponse(b)
-	}
-
-	var response struct {
-		Codespaces []*Codespace `json:"codespaces"`
-	}
-	if err := json.Unmarshal(b, &response); err != nil {
-		return nil, fmt.Errorf("error unmarshaling response: %w", err)
-	}
-	return response.Codespaces, nil
-}
-
-// getCodespaceTokenRequest is the request body for the get codespace token endpoint.
-type getCodespaceTokenRequest struct {
-	MintRepositoryToken bool `json:"mint_repository_token"`
-}
-
-type getCodespaceTokenResponse struct {
-	RepositoryToken string `json:"repository_token"`
-}
-
-// ErrNotProvisioned is returned by GetCodespacesToken to indicate that the
-// creation of a codespace is not yet complete and that the caller should try again.
-var ErrNotProvisioned = errors.New("codespace not provisioned")
-
-// GetCodespaceToken returns a codespace token for the user.
-func (a *API) GetCodespaceToken(ctx context.Context, ownerLogin, codespaceName string) (string, error) {
-	reqBody, err := json.Marshal(getCodespaceTokenRequest{true})
-	if err != nil {
-		return "", fmt.Errorf("error preparing request body: %w", err)
-	}
-
-	req, err := http.NewRequest(
-		http.MethodPost,
-		a.githubAPI+"/vscs_internal/user/"+ownerLogin+"/codespaces/"+codespaceName+"/token",
-		bytes.NewBuffer(reqBody),
-	)
-	if err != nil {
-		return "", fmt.Errorf("error creating request: %w", err)
-	}
-
-	a.setHeaders(req)
-	resp, err := a.do(ctx, req, "/vscs_internal/user/*/codespaces/*/token")
-	if err != nil {
-		return "", fmt.Errorf("error making request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	b, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return "", fmt.Errorf("error reading response body: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		if resp.StatusCode == http.StatusUnprocessableEntity {
-			return "", ErrNotProvisioned
+		if resp.StatusCode != http.StatusOK {
+			return nil, api.HandleHTTPError(resp)
 		}
 
-		return "", jsonErrorResponse(b)
+		var response struct {
+			Codespaces []*Codespace `json:"codespaces"`
+		}
+		dec := json.NewDecoder(resp.Body)
+		if err := dec.Decode(&response); err != nil {
+			return nil, fmt.Errorf("error unmarshaling response: %w", err)
+		}
+
+		nextURL := findNextPage(resp.Header.Get("Link"))
+		codespaces = append(codespaces, response.Codespaces...)
+
+		if nextURL == "" || (limit > 0 && len(codespaces) >= limit) {
+			break
+		}
+
+		if newPerPage := limit - len(codespaces); limit > 0 && newPerPage < 100 {
+			u, _ := url.Parse(nextURL)
+			q := u.Query()
+			q.Set("per_page", strconv.Itoa(newPerPage))
+			u.RawQuery = q.Encode()
+			listURL = u.String()
+		} else {
+			listURL = nextURL
+		}
 	}
 
-	var response getCodespaceTokenResponse
-	if err := json.Unmarshal(b, &response); err != nil {
-		return "", fmt.Errorf("error unmarshaling response: %w", err)
-	}
-
-	return response.RepositoryToken, nil
+	return codespaces, nil
 }
 
-// GetCodespace returns a codespace for the user.
-func (a *API) GetCodespace(ctx context.Context, token, owner, codespace string) (*Codespace, error) {
+var linkRE = regexp.MustCompile(`<([^>]+)>;\s*rel="([^"]+)"`)
+
+func findNextPage(linkValue string) string {
+	for _, m := range linkRE.FindAllStringSubmatch(linkValue, -1) {
+		if len(m) > 2 && m[2] == "next" {
+			return m[1]
+		}
+	}
+	return ""
+}
+
+// GetCodespace returns the user codespace based on the provided name.
+// If the codespace is not found, an error is returned.
+// If includeConnection is true, it will return the connection information for the codespace.
+func (a *API) GetCodespace(ctx context.Context, codespaceName string, includeConnection bool) (*Codespace, error) {
 	req, err := http.NewRequest(
 		http.MethodGet,
-		a.githubAPI+"/vscs_internal/user/"+owner+"/codespaces/"+codespace,
+		a.githubAPI+"/user/codespaces/"+codespaceName,
 		nil,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("error creating request: %w", err)
 	}
 
-	// TODO: use a.setHeaders()
-	req.Header.Set("Authorization", "Bearer "+token)
-	resp, err := a.do(ctx, req, "/vscs_internal/user/*/codespaces/*")
+	if includeConnection {
+		q := req.URL.Query()
+		q.Add("internal", "true")
+		q.Add("refresh", "true")
+		req.URL.RawQuery = q.Encode()
+	}
+
+	a.setHeaders(req)
+	resp, err := a.do(ctx, req, "/user/codespaces/*")
 	if err != nil {
 		return nil, fmt.Errorf("error making request: %w", err)
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode != http.StatusOK {
+		return nil, api.HandleHTTPError(resp)
+	}
+
 	b, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("error reading response body: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, jsonErrorResponse(b)
 	}
 
 	var response Codespace
@@ -332,26 +301,36 @@ func (a *API) StartCodespace(ctx context.Context, codespaceName string) error {
 	}
 	defer resp.Body.Close()
 
-	b, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("error reading response body: %w", err)
-	}
-
 	if resp.StatusCode != http.StatusOK {
 		if resp.StatusCode == http.StatusConflict {
 			// 409 means the codespace is already running which we can safely ignore
 			return nil
 		}
+		return api.HandleHTTPError(resp)
+	}
 
-		// Error response may be a numeric code or a JSON {"message": "..."}.
-		if bytes.HasPrefix(b, []byte("{")) {
-			return jsonErrorResponse(b) // probably JSON
-		}
+	return nil
+}
 
-		if len(b) > 100 {
-			b = append(b[:97], "..."...)
-		}
-		return fmt.Errorf("failed to start codespace: %s", b)
+func (a *API) StopCodespace(ctx context.Context, codespaceName string) error {
+	req, err := http.NewRequest(
+		http.MethodPost,
+		a.githubAPI+"/user/codespaces/"+codespaceName+"/stop",
+		nil,
+	)
+	if err != nil {
+		return fmt.Errorf("error creating request: %w", err)
+	}
+
+	a.setHeaders(req)
+	resp, err := a.do(ctx, req, "/user/codespaces/*/stop")
+	if err != nil {
+		return fmt.Errorf("error making request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return api.HandleHTTPError(resp)
 	}
 
 	return nil
@@ -374,13 +353,13 @@ func (a *API) GetCodespaceRegionLocation(ctx context.Context) (string, error) {
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode != http.StatusOK {
+		return "", api.HandleHTTPError(resp)
+	}
+
 	b, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
 		return "", fmt.Errorf("error reading response body: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return "", jsonErrorResponse(b)
 	}
 
 	var response getCodespaceRegionLocationResponse
@@ -416,13 +395,13 @@ func (a *API) GetCodespacesMachines(ctx context.Context, repoID int, branch, loc
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode != http.StatusOK {
+		return nil, api.HandleHTTPError(resp)
+	}
+
 	b, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("error reading response body: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, jsonErrorResponse(b)
 	}
 
 	var response struct {
@@ -437,7 +416,6 @@ func (a *API) GetCodespacesMachines(ctx context.Context, repoID int, branch, loc
 
 // CreateCodespaceParams are the required parameters for provisioning a Codespace.
 type CreateCodespaceParams struct {
-	User                      string
 	RepositoryID              int
 	Branch, Machine, Location string
 }
@@ -464,19 +442,14 @@ func (a *API) CreateCodespace(ctx context.Context, params *CreateCodespaceParams
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		case <-ticker.C:
-			token, err := a.GetCodespaceToken(ctx, params.User, codespace.Name)
-			if err != nil {
-				if err == ErrNotProvisioned {
-					// Do nothing. We expect this to fail until the codespace is provisioned
-					continue
-				}
-
-				return nil, fmt.Errorf("failed to get codespace token: %w", err)
-			}
-
-			codespace, err = a.GetCodespace(ctx, token, params.User, codespace.Name)
+			codespace, err = a.GetCodespace(ctx, codespace.Name, false)
 			if err != nil {
 				return nil, fmt.Errorf("failed to get codespace: %w", err)
+			}
+
+			// we continue to poll until the codespace shows as provisioned
+			if codespace.State != CodespaceStateAvailable {
+				continue
 			}
 
 			return codespace, nil
@@ -515,16 +488,15 @@ func (a *API) startCreate(ctx context.Context, repoID int, machine, branch, loca
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode == http.StatusAccepted {
+		return nil, errProvisioningInProgress // RPC finished before result of creation known
+	} else if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+		return nil, api.HandleHTTPError(resp)
+	}
+
 	b, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("error reading response body: %w", err)
-	}
-
-	switch {
-	case resp.StatusCode > http.StatusAccepted:
-		return nil, jsonErrorResponse(b)
-	case resp.StatusCode == http.StatusAccepted:
-		return nil, errProvisioningInProgress // RPC finished before result of creation known
 	}
 
 	var response Codespace
@@ -549,12 +521,8 @@ func (a *API) DeleteCodespace(ctx context.Context, codespaceName string) error {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode > http.StatusAccepted {
-		b, err := ioutil.ReadAll(resp.Body)
-		if err != nil {
-			return fmt.Errorf("error reading response body: %w", err)
-		}
-		return jsonErrorResponse(b)
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
+		return api.HandleHTTPError(resp)
 	}
 
 	return nil
@@ -565,13 +533,13 @@ type getCodespaceRepositoryContentsResponse struct {
 }
 
 func (a *API) GetCodespaceRepositoryContents(ctx context.Context, codespace *Codespace, path string) ([]byte, error) {
-	req, err := http.NewRequest(http.MethodGet, a.githubAPI+"/repos/"+codespace.RepositoryNWO+"/contents/"+path, nil)
+	req, err := http.NewRequest(http.MethodGet, a.githubAPI+"/repos/"+codespace.Repository.FullName+"/contents/"+path, nil)
 	if err != nil {
 		return nil, fmt.Errorf("error creating request: %w", err)
 	}
 
 	q := req.URL.Query()
-	q.Add("ref", codespace.Branch)
+	q.Add("ref", codespace.GitStatus.Ref)
 	req.URL.RawQuery = q.Encode()
 
 	a.setHeaders(req)
@@ -583,15 +551,13 @@ func (a *API) GetCodespaceRepositoryContents(ctx context.Context, codespace *Cod
 
 	if resp.StatusCode == http.StatusNotFound {
 		return nil, nil
+	} else if resp.StatusCode != http.StatusOK {
+		return nil, api.HandleHTTPError(resp)
 	}
 
 	b, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("error reading response body: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, jsonErrorResponse(b)
 	}
 
 	var response getCodespaceRepositoryContentsResponse
@@ -621,13 +587,13 @@ func (a *API) AuthorizedKeys(ctx context.Context, user string) ([]byte, error) {
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("server returned %s", resp.Status)
+	}
+
 	b, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("error reading response body: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("server returned %s", resp.Status)
 	}
 	return b, nil
 }

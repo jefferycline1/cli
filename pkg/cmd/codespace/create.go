@@ -5,13 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"strings"
 
 	"github.com/AlecAivazis/survey/v2"
 	"github.com/cli/cli/v2/internal/codespaces"
 	"github.com/cli/cli/v2/internal/codespaces/api"
 	"github.com/cli/cli/v2/pkg/cmd/codespace/output"
-	"github.com/fatih/camelcase"
 	"github.com/spf13/cobra"
 )
 
@@ -81,7 +79,6 @@ func (a *App) Create(ctx context.Context, opts createOptions) error {
 
 	a.logger.Print("Creating your codespace...")
 	codespace, err := a.apiClient.CreateCodespace(ctx, &api.CreateCodespaceParams{
-		User:         userResult.User.Login,
 		RepositoryID: repository.ID,
 		Branch:       branch,
 		Machine:      machine,
@@ -157,7 +154,7 @@ func showStatus(ctx context.Context, log *output.Logger, apiClient apiClient, us
 		}
 	}
 
-	err := codespaces.PollPostCreateStates(ctx, log, apiClient, user, codespace, poller)
+	err := codespaces.PollPostCreateStates(ctx, log, apiClient, codespace, poller)
 	if err != nil {
 		if errors.Is(err, context.Canceled) && breakNextState {
 			return nil // we cancelled the context to stop polling, we can ignore the error
@@ -267,9 +264,7 @@ func getMachineName(ctx context.Context, apiClient apiClient, repoID int, machin
 	machineNames := make([]string, 0, len(machines))
 	machineByName := make(map[string]*api.Machine)
 	for _, m := range machines {
-		nameParts := camelcase.Split(m.Name)
-		machineName := strings.Title(strings.ToLower(nameParts[0]))
-		machineName = fmt.Sprintf("%s - %s", machineName, m.DisplayName)
+		machineName := m.DisplayName
 		machineNames = append(machineNames, machineName)
 		machineByName[machineName] = m
 	}
