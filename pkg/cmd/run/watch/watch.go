@@ -1,7 +1,6 @@
 package watch
 
 import (
-	"errors"
 	"fmt"
 	"net/http"
 	"runtime"
@@ -57,7 +56,7 @@ func NewCmdWatch(f *cmdutil.Factory, runF func(*WatchOptions) error) *cobra.Comm
 			if len(args) > 0 {
 				opts.RunID = args[0]
 			} else if !opts.IO.CanPrompt() {
-				return &cmdutil.FlagError{Err: errors.New("run ID required when not running interactively")}
+				return cmdutil.FlagErrorf("run ID required when not running interactively")
 			} else {
 				opts.Prompt = true
 			}
@@ -94,7 +93,7 @@ func watchRun(opts *WatchOptions) error {
 	var run *shared.Run
 
 	if opts.Prompt {
-		runs, err := shared.GetRunsWithFilter(client, repo, 10, func(run shared.Run) bool {
+		runs, err := shared.GetRunsWithFilter(client, repo, nil, 10, func(run shared.Run) bool {
 			return run.Status != shared.Completed
 		})
 		if err != nil {

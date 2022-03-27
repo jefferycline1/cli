@@ -8,6 +8,18 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+func setenv(t *testing.T, key, newValue string) {
+	oldValue, hasValue := os.LookupEnv(key)
+	os.Setenv(key, newValue)
+	t.Cleanup(func() {
+		if hasValue {
+			os.Setenv(key, oldValue)
+		} else {
+			os.Unsetenv(key)
+		}
+	})
+}
+
 func TestInheritEnv(t *testing.T) {
 	orig_GITHUB_TOKEN := os.Getenv("GITHUB_TOKEN")
 	orig_GITHUB_ENTERPRISE_TOKEN := os.Getenv("GITHUB_ENTERPRISE_TOKEN")
@@ -32,10 +44,12 @@ func TestInheritEnv(t *testing.T) {
 	tests := []struct {
 		name                    string
 		baseConfig              string
+		GH_HOST                 string
 		GITHUB_TOKEN            string
 		GITHUB_ENTERPRISE_TOKEN string
 		GH_TOKEN                string
 		GH_ENTERPRISE_TOKEN     string
+		CODESPACES              string
 		hostname                string
 		wants                   wants
 	}{
@@ -96,6 +110,19 @@ func TestInheritEnv(t *testing.T) {
 				token:     "",
 				source:    ".config.gh.config.yml",
 				writeable: true,
+			},
+		},
+		{
+			name:         "GITHUB_TOKEN allowed in Codespaces",
+			baseConfig:   ``,
+			GITHUB_TOKEN: "OTOKEN",
+			hostname:     "example.org",
+			CODESPACES:   "true",
+			wants: wants{
+				hosts:     []string{"github.com"},
+				token:     "OTOKEN",
+				source:    "GITHUB_TOKEN",
+				writeable: false,
 			},
 		},
 		{
@@ -259,14 +286,29 @@ func TestInheritEnv(t *testing.T) {
 				writeable: false,
 			},
 		},
+		{
+			name:                "GH_HOST adds host entry when paired with environment token",
+			baseConfig:          ``,
+			GH_HOST:             "example.org",
+			GH_ENTERPRISE_TOKEN: "GH_ENTERPRISE_TOKEN",
+			hostname:            "example.org",
+			wants: wants{
+				hosts:     []string{"example.org"},
+				token:     "GH_ENTERPRISE_TOKEN",
+				source:    "GH_ENTERPRISE_TOKEN",
+				writeable: false,
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			os.Setenv("GITHUB_TOKEN", tt.GITHUB_TOKEN)
-			os.Setenv("GITHUB_ENTERPRISE_TOKEN", tt.GITHUB_ENTERPRISE_TOKEN)
-			os.Setenv("GH_TOKEN", tt.GH_TOKEN)
-			os.Setenv("GH_ENTERPRISE_TOKEN", tt.GH_ENTERPRISE_TOKEN)
-			os.Setenv("AppData", "")
+			setenv(t, "GH_HOST", tt.GH_HOST)
+			setenv(t, "GITHUB_TOKEN", tt.GITHUB_TOKEN)
+			setenv(t, "GITHUB_ENTERPRISE_TOKEN", tt.GITHUB_ENTERPRISE_TOKEN)
+			setenv(t, "GH_TOKEN", tt.GH_TOKEN)
+			setenv(t, "GH_ENTERPRISE_TOKEN", tt.GH_ENTERPRISE_TOKEN)
+			setenv(t, "AppData", "")
+			setenv(t, "CODESPACES", tt.CODESPACES)
 
 			baseCfg := NewFromString(tt.baseConfig)
 			cfg := InheritEnv(baseCfg)

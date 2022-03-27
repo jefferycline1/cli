@@ -6,12 +6,11 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"syscall"
 	"text/template"
 
 	"github.com/MakeNowJust/heredoc"
 	"github.com/cli/cli/v2/api"
-	"github.com/cli/cli/v2/internal/ghinstance"
+	"github.com/cli/cli/v2/internal/config"
 	"github.com/cli/cli/v2/internal/ghrepo"
 	"github.com/cli/cli/v2/pkg/cmdutil"
 	"github.com/cli/cli/v2/pkg/iostreams"
@@ -30,6 +29,7 @@ type ViewOptions struct {
 	BaseRepo   func() (ghrepo.Interface, error)
 	Browser    browser
 	Exporter   cmdutil.Exporter
+	Config     func() (config.Config, error)
 
 	RepoArg string
 	Web     bool
@@ -42,6 +42,7 @@ func NewCmdView(f *cmdutil.Factory, runF func(*ViewOptions) error) *cobra.Comman
 		HttpClient: f.HttpClient,
 		BaseRepo:   f.BaseRepo,
 		Browser:    f.Browser,
+		Config:     f.Config,
 	}
 
 	cmd := &cobra.Command{
@@ -90,10 +91,18 @@ func viewRun(opts *ViewOptions) error {
 			return err
 		}
 	} else {
-		var err error
 		viewURL := opts.RepoArg
 		if !strings.Contains(viewURL, "/") {
-			currentUser, err := api.CurrentLoginName(apiClient, ghinstance.Default())
+			cfg, err := opts.Config()
+			if err != nil {
+				return err
+			}
+			hostname, err := cfg.DefaultHost()
+			if err != nil {
+				return err
+			}
+
+			currentUser, err := api.CurrentLoginName(apiClient, hostname)
 			if err != nil {
 				return err
 			}
@@ -132,10 +141,11 @@ func viewRun(opts *ViewOptions) error {
 	}
 
 	opts.IO.DetectTerminalTheme()
-	if err := opts.IO.StartPager(); err != nil {
-		return err
+	if err := opts.IO.StartPager(); err == nil {
+		defer opts.IO.StopPager()
+	} else {
+		fmt.Fprintf(opts.IO.ErrOut, "failed to start pager: %v\n", err)
 	}
-	defer opts.IO.StopPager()
 
 	if opts.Exporter != nil {
 		return opts.Exporter.Write(opts.IO, repo)
@@ -177,8 +187,7 @@ func viewRun(opts *ViewOptions) error {
 		readmeContent = cs.Gray("This repository does not have a README")
 	} else if isMarkdownFile(readme.Filename) {
 		var err error
-		style := markdown.GetStyle(opts.IO.TerminalTheme())
-		readmeContent, err = markdown.RenderWithBaseURL(readme.Content, style, readme.BaseURL)
+		readmeContent, err = markdown.Render(readme.Content, markdown.WithIO(opts.IO), markdown.WithBaseURL(readme.BaseURL))
 		if err != nil {
 			return fmt.Errorf("error rendering markdown: %w", err)
 		}
@@ -203,12 +212,7 @@ func viewRun(opts *ViewOptions) error {
 		View:        cs.Gray(fmt.Sprintf("View this repository on GitHub: %s", openURL)),
 	}
 
-	err = tmpl.Execute(stdout, repoData)
-	if err != nil && !errors.Is(err, syscall.EPIPE) {
-		return err
-	}
-
-	return nil
+	return tmpl.Execute(stdout, repoData)
 }
 
 func isMarkdownFile(filename string) bool {

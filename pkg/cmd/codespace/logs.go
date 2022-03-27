@@ -36,24 +36,19 @@ func (a *App) Logs(ctx context.Context, codespaceName string, follow bool) (err 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	user, err := a.apiClient.GetUser(ctx)
+	codespace, err := getOrChooseCodespace(ctx, a.apiClient, codespaceName)
 	if err != nil {
-		return fmt.Errorf("getting user: %w", err)
+		return err
 	}
 
 	authkeys := make(chan error, 1)
 	go func() {
-		authkeys <- checkAuthorizedKeys(ctx, a.apiClient, user.Login)
+		authkeys <- checkAuthorizedKeys(ctx, a.apiClient)
 	}()
 
-	codespace, err := getOrChooseCodespace(ctx, a.apiClient, codespaceName)
+	session, err := codespaces.ConnectToLiveshare(ctx, a, noopLogger(), a.apiClient, codespace)
 	if err != nil {
-		return fmt.Errorf("get or choose codespace: %w", err)
-	}
-
-	session, err := codespaces.ConnectToLiveshare(ctx, a.logger, noopLogger(), a.apiClient, codespace)
-	if err != nil {
-		return fmt.Errorf("connecting to Live Share: %w", err)
+		return fmt.Errorf("connecting to codespace: %w", err)
 	}
 	defer safeClose(session, &err)
 
@@ -69,8 +64,9 @@ func (a *App) Logs(ctx context.Context, codespaceName string, follow bool) (err 
 	defer listen.Close()
 	localPort := listen.Addr().(*net.TCPAddr).Port
 
-	a.logger.Println("Fetching SSH Details...")
+	a.StartProgressIndicatorWithLabel("Fetching SSH Details")
 	remoteSSHServerPort, sshUser, err := session.StartSSHServer(ctx)
+	a.StopProgressIndicator()
 	if err != nil {
 		return fmt.Errorf("error getting ssh server details: %w", err)
 	}

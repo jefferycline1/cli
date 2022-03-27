@@ -2,6 +2,7 @@ package root
 
 import (
 	"net/http"
+	"os"
 	"sync"
 
 	"github.com/MakeNowJust/heredoc"
@@ -12,7 +13,6 @@ import (
 	authCmd "github.com/cli/cli/v2/pkg/cmd/auth"
 	browseCmd "github.com/cli/cli/v2/pkg/cmd/browse"
 	codespaceCmd "github.com/cli/cli/v2/pkg/cmd/codespace"
-	"github.com/cli/cli/v2/pkg/cmd/codespace/output"
 	completionCmd "github.com/cli/cli/v2/pkg/cmd/completion"
 	configCmd "github.com/cli/cli/v2/pkg/cmd/config"
 	extensionCmd "github.com/cli/cli/v2/pkg/cmd/extension"
@@ -25,6 +25,7 @@ import (
 	repoCmd "github.com/cli/cli/v2/pkg/cmd/repo"
 	creditsCmd "github.com/cli/cli/v2/pkg/cmd/repo/credits"
 	runCmd "github.com/cli/cli/v2/pkg/cmd/run"
+	searchCmd "github.com/cli/cli/v2/pkg/cmd/search"
 	secretCmd "github.com/cli/cli/v2/pkg/cmd/secret"
 	sshKeyCmd "github.com/cli/cli/v2/pkg/cmd/ssh-key"
 	versionCmd "github.com/cli/cli/v2/pkg/cmd/version"
@@ -49,9 +50,6 @@ func NewCmdRoot(f *cmdutil.Factory, version, buildDate string) *cobra.Command {
 		Annotations: map[string]string{
 			"help:feedback": heredoc.Doc(`
 				Open an issue using 'gh issue create -R github.com/cli/cli'
-			`),
-			"help:environment": heredoc.Doc(`
-				See 'gh help environment' for the list of supported environment variables.
 			`),
 		},
 	}
@@ -82,6 +80,7 @@ func NewCmdRoot(f *cmdutil.Factory, version, buildDate string) *cobra.Command {
 	cmd.AddCommand(gpgKeyCmd.NewCmdGPGKey(f))
 	cmd.AddCommand(completionCmd.NewCmdCompletion(f.IOStreams))
 	cmd.AddCommand(extensionCmd.NewCmdExtension(f))
+	cmd.AddCommand(searchCmd.NewCmdSearch(f))
 	cmd.AddCommand(secretCmd.NewCmdSecret(f))
 	cmd.AddCommand(sshKeyCmd.NewCmdSSHKey(f))
 	cmd.AddCommand(newCodespaceCmd(f))
@@ -130,13 +129,24 @@ func bareHTTPClient(f *cmdutil.Factory, version string) func() (*http.Client, er
 }
 
 func newCodespaceCmd(f *cmdutil.Factory) *cobra.Command {
-	cmd := codespaceCmd.NewRootCmd(codespaceCmd.NewApp(
-		output.NewLogger(f.IOStreams.Out, f.IOStreams.ErrOut, !f.IOStreams.IsStdoutTTY()),
-		codespacesAPI.New("", &lazyLoadedHTTPClient{factory: f}),
-	))
+	serverURL := os.Getenv("GITHUB_SERVER_URL")
+	apiURL := os.Getenv("GITHUB_API_URL")
+	vscsURL := os.Getenv("INTERNAL_VSCS_TARGET_URL")
+	app := codespaceCmd.NewApp(
+		f.IOStreams,
+		f,
+		codespacesAPI.New(
+			serverURL,
+			apiURL,
+			vscsURL,
+			&lazyLoadedHTTPClient{factory: f},
+		),
+		f.Browser,
+	)
+	cmd := codespaceCmd.NewRootCmd(app)
 	cmd.Use = "codespace"
 	cmd.Aliases = []string{"cs"}
-	cmd.Hidden = true
+	cmd.Annotations = map[string]string{"IsCore": "true"}
 	return cmd
 }
 

@@ -17,6 +17,12 @@ var _ Extension = &ExtensionMock{}
 //
 // 		// make and configure a mocked Extension
 // 		mockedExtension := &ExtensionMock{
+// 			CurrentVersionFunc: func() string {
+// 				panic("mock out the CurrentVersion method")
+// 			},
+// 			IsBinaryFunc: func() bool {
+// 				panic("mock out the IsBinary method")
+// 			},
 // 			IsLocalFunc: func() bool {
 // 				panic("mock out the IsLocal method")
 // 			},
@@ -39,6 +45,12 @@ var _ Extension = &ExtensionMock{}
 //
 // 	}
 type ExtensionMock struct {
+	// CurrentVersionFunc mocks the CurrentVersion method.
+	CurrentVersionFunc func() string
+
+	// IsBinaryFunc mocks the IsBinary method.
+	IsBinaryFunc func() bool
+
 	// IsLocalFunc mocks the IsLocal method.
 	IsLocalFunc func() bool
 
@@ -56,6 +68,12 @@ type ExtensionMock struct {
 
 	// calls tracks calls to the methods.
 	calls struct {
+		// CurrentVersion holds details about calls to the CurrentVersion method.
+		CurrentVersion []struct {
+		}
+		// IsBinary holds details about calls to the IsBinary method.
+		IsBinary []struct {
+		}
 		// IsLocal holds details about calls to the IsLocal method.
 		IsLocal []struct {
 		}
@@ -72,11 +90,65 @@ type ExtensionMock struct {
 		UpdateAvailable []struct {
 		}
 	}
+	lockCurrentVersion  sync.RWMutex
+	lockIsBinary        sync.RWMutex
 	lockIsLocal         sync.RWMutex
 	lockName            sync.RWMutex
 	lockPath            sync.RWMutex
 	lockURL             sync.RWMutex
 	lockUpdateAvailable sync.RWMutex
+}
+
+// CurrentVersion calls CurrentVersionFunc.
+func (mock *ExtensionMock) CurrentVersion() string {
+	if mock.CurrentVersionFunc == nil {
+		panic("ExtensionMock.CurrentVersionFunc: method is nil but Extension.CurrentVersion was just called")
+	}
+	callInfo := struct {
+	}{}
+	mock.lockCurrentVersion.Lock()
+	mock.calls.CurrentVersion = append(mock.calls.CurrentVersion, callInfo)
+	mock.lockCurrentVersion.Unlock()
+	return mock.CurrentVersionFunc()
+}
+
+// CurrentVersionCalls gets all the calls that were made to CurrentVersion.
+// Check the length with:
+//     len(mockedExtension.CurrentVersionCalls())
+func (mock *ExtensionMock) CurrentVersionCalls() []struct {
+} {
+	var calls []struct {
+	}
+	mock.lockCurrentVersion.RLock()
+	calls = mock.calls.CurrentVersion
+	mock.lockCurrentVersion.RUnlock()
+	return calls
+}
+
+// IsBinary calls IsBinaryFunc.
+func (mock *ExtensionMock) IsBinary() bool {
+	if mock.IsBinaryFunc == nil {
+		panic("ExtensionMock.IsBinaryFunc: method is nil but Extension.IsBinary was just called")
+	}
+	callInfo := struct {
+	}{}
+	mock.lockIsBinary.Lock()
+	mock.calls.IsBinary = append(mock.calls.IsBinary, callInfo)
+	mock.lockIsBinary.Unlock()
+	return mock.IsBinaryFunc()
+}
+
+// IsBinaryCalls gets all the calls that were made to IsBinary.
+// Check the length with:
+//     len(mockedExtension.IsBinaryCalls())
+func (mock *ExtensionMock) IsBinaryCalls() []struct {
+} {
+	var calls []struct {
+	}
+	mock.lockIsBinary.RLock()
+	calls = mock.calls.IsBinary
+	mock.lockIsBinary.RUnlock()
+	return calls
 }
 
 // IsLocal calls IsLocalFunc.

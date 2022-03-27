@@ -79,9 +79,8 @@ func closeRun(opts *CloseOptions) error {
 	if err != nil {
 		return err
 	}
-	apiClient := api.NewClientFromHTTP(httpClient)
 
-	err = api.PullRequestClose(apiClient, baseRepo, pr)
+	err = api.PullRequestClose(httpClient, baseRepo, pr.ID)
 	if err != nil {
 		return fmt.Errorf("API call failed: %w", err)
 	}
@@ -90,34 +89,37 @@ func closeRun(opts *CloseOptions) error {
 
 	if opts.DeleteBranch {
 		branchSwitchString := ""
+		apiClient := api.NewClientFromHTTP(httpClient)
+		localBranchExists := git.HasLocalBranch(pr.HeadRefName)
 
 		if opts.DeleteLocalBranch {
-			currentBranch, err := opts.Branch()
-			if err != nil {
-				return err
-			}
-
-			var branchToSwitchTo string
-			if currentBranch == pr.HeadRefName {
-				branchToSwitchTo, err = api.RepoDefaultBranch(apiClient, baseRepo)
-				if err != nil {
-					return err
-				}
-				err = git.CheckoutBranch(branchToSwitchTo)
-				if err != nil {
-					return err
-				}
-			}
-
-			localBranchExists := git.HasLocalBranch(pr.HeadRefName)
 			if localBranchExists {
+				currentBranch, err := opts.Branch()
+				if err != nil {
+					return err
+				}
+
+				var branchToSwitchTo string
+				if currentBranch == pr.HeadRefName {
+					branchToSwitchTo, err = api.RepoDefaultBranch(apiClient, baseRepo)
+					if err != nil {
+						return err
+					}
+					err = git.CheckoutBranch(branchToSwitchTo)
+					if err != nil {
+						return err
+					}
+				}
+
 				if err := git.DeleteLocalBranch(pr.HeadRefName); err != nil {
 					return fmt.Errorf("failed to delete local branch %s: %w", cs.Cyan(pr.HeadRefName), err)
 				}
-			}
 
-			if branchToSwitchTo != "" {
-				branchSwitchString = fmt.Sprintf(" and switched to branch %s", cs.Cyan(branchToSwitchTo))
+				if branchToSwitchTo != "" {
+					branchSwitchString = fmt.Sprintf(" and switched to branch %s", cs.Cyan(branchToSwitchTo))
+				}
+			} else {
+				fmt.Fprintf(opts.IO.ErrOut, "%s Skipped deleting the local branch since current directory is not a git repository \n", cs.WarningIcon())
 			}
 		}
 

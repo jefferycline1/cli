@@ -33,10 +33,11 @@ func NewCmdList(f *cmdutil.Factory, runF func(*ListOptions) error) *cobra.Comman
 	}
 
 	cmd := &cobra.Command{
-		Use:   "list",
-		Short: "List workflows",
-		Long:  "List workflow files, hiding disabled workflows by default.",
-		Args:  cobra.NoArgs,
+		Use:     "list",
+		Short:   "List workflows",
+		Long:    "List workflow files, hiding disabled workflows by default.",
+		Aliases: []string{"ls"},
+		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// support `-R, --repo` override
 			opts.BaseRepo = f.BaseRepo
@@ -45,7 +46,7 @@ func NewCmdList(f *cmdutil.Factory, runF func(*ListOptions) error) *cobra.Comman
 			opts.PlainOutput = !terminal
 
 			if opts.Limit < 1 {
-				return &cmdutil.FlagError{Err: fmt.Errorf("invalid limit: %v", opts.Limit)}
+				return cmdutil.FlagErrorf("invalid limit: %v", opts.Limit)
 			}
 
 			if runF != nil {
@@ -86,6 +87,12 @@ func listRun(opts *ListOptions) error {
 			fmt.Fprintln(opts.IO.ErrOut, "No workflows found")
 		}
 		return nil
+	}
+
+	if err := opts.IO.StartPager(); err == nil {
+		defer opts.IO.StopPager()
+	} else {
+		fmt.Fprintf(opts.IO.ErrOut, "failed to start pager: %v\n", err)
 	}
 
 	tp := utils.NewTablePrinter(opts.IO)

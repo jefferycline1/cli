@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"net/http"
+	"net/url"
 	"testing"
 
 	"github.com/cli/cli/v2/internal/ghrepo"
@@ -51,6 +52,22 @@ func TestNewCmdList(t *testing.T) {
 				WorkflowSelector: "foo.yml",
 			},
 		},
+		{
+			name: "branch",
+			cli:  "--branch new-cool-stuff",
+			wants: ListOptions{
+				Limit:  defaultLimit,
+				Branch: "new-cool-stuff",
+			},
+		},
+		{
+			name: "user",
+			cli:  "--user bak1an",
+			wants: ListOptions{
+				Limit: defaultLimit,
+				Actor: "bak1an",
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -83,6 +100,9 @@ func TestNewCmdList(t *testing.T) {
 			}
 
 			assert.Equal(t, tt.wants.Limit, gotOpts.Limit)
+			assert.Equal(t, tt.wants.WorkflowSelector, gotOpts.WorkflowSelector)
+			assert.Equal(t, tt.wants.Branch, gotOpts.Branch)
+			assert.Equal(t, tt.wants.Actor, gotOpts.Actor)
 		})
 	}
 }
@@ -108,7 +128,7 @@ func TestListRun(t *testing.T) {
 						WorkflowRuns: shared.TestRuns,
 					}))
 			},
-			wantOut: "STATUS  NAME         WORKFLOW     BRANCH  EVENT  ID    ELAPSED  AGE\nX       cool commit  timed out    trunk   push   1     4m34s    Feb 23, 2021\n*       cool commit  in progress  trunk   push   2     4m34s    Feb 23, 2021\n✓       cool commit  successful   trunk   push   3     4m34s    Feb 23, 2021\n-       cool commit  cancelled    trunk   push   4     4m34s    Feb 23, 2021\nX       cool commit  failed       trunk   push   1234  4m34s    Feb 23, 2021\n-       cool commit  neutral      trunk   push   6     4m34s    Feb 23, 2021\n-       cool commit  skipped      trunk   push   7     4m34s    Feb 23, 2021\n*       cool commit  requested    trunk   push   8     4m34s    Feb 23, 2021\n*       cool commit  queued       trunk   push   9     4m34s    Feb 23, 2021\nX       cool commit  stale        trunk   push   10    4m34s    Feb 23, 2021\n\nFor details on a run, try: gh run view <run-id>\n",
+			wantOut: "STATUS  NAME         WORKFLOW     BRANCH  EVENT  ID    ELAPSED  AGE\nX       cool commit  timed out    trunk   push   1     4m34s    Feb 23, 2021\n*       cool commit  in progress  trunk   push   2     4m34s    Feb 23, 2021\n✓       cool commit  successful   trunk   push   3     4m34s    Feb 23, 2021\nX       cool commit  cancelled    trunk   push   4     4m34s    Feb 23, 2021\nX       cool commit  failed       trunk   push   1234  4m34s    Feb 23, 2021\n-       cool commit  neutral      trunk   push   6     4m34s    Feb 23, 2021\n-       cool commit  skipped      trunk   push   7     4m34s    Feb 23, 2021\n*       cool commit  requested    trunk   push   8     4m34s    Feb 23, 2021\n*       cool commit  queued       trunk   push   9     4m34s    Feb 23, 2021\nX       cool commit  stale        trunk   push   10    4m34s    Feb 23, 2021\n\nFor details on a run, try: gh run view <run-id>\n",
 		},
 		{
 			name: "blank nontty",
@@ -197,6 +217,40 @@ func TestListRun(t *testing.T) {
 					}))
 			},
 			wantOut: "STATUS  NAME         WORKFLOW     BRANCH  EVENT  ID    ELAPSED  AGE\n*       cool commit  in progress  trunk   push   2     4m34s    Feb 23, 2021\n✓       cool commit  successful   trunk   push   3     4m34s    Feb 23, 2021\nX       cool commit  failed       trunk   push   1234  4m34s    Feb 23, 2021\n\nFor details on a run, try: gh run view <run-id>\n",
+		},
+		{
+			name: "branch filter applied",
+			opts: &ListOptions{
+				Limit:  defaultLimit,
+				Branch: "the-branch",
+			},
+			stubs: func(reg *httpmock.Registry) {
+				reg.Register(
+					httpmock.QueryMatcher("GET", "repos/OWNER/REPO/actions/runs", url.Values{
+						"branch": []string{"the-branch"},
+					}),
+					httpmock.JSONResponse(shared.RunsPayload{}),
+				)
+			},
+			wantOut:    "",
+			wantErrOut: "No runs found\n",
+		},
+		{
+			name: "actor filter applied",
+			opts: &ListOptions{
+				Limit: defaultLimit,
+				Actor: "bak1an",
+			},
+			stubs: func(reg *httpmock.Registry) {
+				reg.Register(
+					httpmock.QueryMatcher("GET", "repos/OWNER/REPO/actions/runs", url.Values{
+						"actor": []string{"bak1an"},
+					}),
+					httpmock.JSONResponse(shared.RunsPayload{}),
+				)
+			},
+			wantOut:    "",
+			wantErrOut: "No runs found\n",
 		},
 	}
 

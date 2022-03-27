@@ -6,6 +6,7 @@ import (
 	"io"
 	"io/ioutil"
 	"net/http"
+	"net/url"
 	"os"
 	"regexp"
 	"strings"
@@ -56,6 +57,24 @@ func GraphQL(q string) Matcher {
 	}
 }
 
+func QueryMatcher(method string, path string, query url.Values) Matcher {
+	return func(req *http.Request) bool {
+		if !REST(method, path)(req) {
+			return false
+		}
+
+		actualQuery := req.URL.Query()
+
+		for param := range query {
+			if !(actualQuery.Get(param) == query.Get(param)) {
+				return false
+			}
+		}
+
+		return true
+	}
+}
+
 func readBody(req *http.Request) ([]byte, error) {
 	bodyCopy := &bytes.Buffer{}
 	r := io.TeeReader(req.Body, bodyCopy)
@@ -74,6 +93,17 @@ func decodeJSONBody(req *http.Request, dest interface{}) error {
 func StringResponse(body string) Responder {
 	return func(req *http.Request) (*http.Response, error) {
 		return httpResponse(200, req, bytes.NewBufferString(body)), nil
+	}
+}
+
+func WithHeader(responder Responder, header string, value string) Responder {
+	return func(req *http.Request) (*http.Response, error) {
+		resp, _ := responder(req)
+		if resp.Header == nil {
+			resp.Header = make(http.Header)
+		}
+		resp.Header.Set(header, value)
+		return resp, nil
 	}
 }
 
